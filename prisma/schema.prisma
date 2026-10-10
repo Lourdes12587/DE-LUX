@@ -1,0 +1,510 @@
+// PHENOMENON data model. See PLAN.md for the decisions behind it.
+// Money is always Decimal; totals are recomputed server-side (src/lib/pricing.ts).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Catalogue ─────────────────────────
+
+/// Real categories only. "new-in" and "sale" are virtual collections (queries on Product flags/prices).
+model Category {
+  id            String         @id @default(cuid())
+  slug          String         @unique
+  name          String
+  title         String
+  description   String?
+  image         String?
+  position      Int            @default(0)
+  products      Product[]
+  discountCodes DiscountCode[] @relation("DiscountCodeCategories")
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model Product {
+  id             String         @id @default(cuid())
+  slug           String         @unique
+  name           String
+  description    String
+  details        String[]
+  composition    String?
+  price          Decimal        @db.Decimal(10, 2)
+  compareAtPrice Decimal?       @db.Decimal(10, 2)
+  status         ProductStatus  @default(DRAFT)
+  featured       Boolean        @default(false)
+  newArrival     Boolean        @default(false)
+  bestSeller     Boolean        @default(false)
+  seoTitle       String?
+  seoDescription String?
+  categoryId     String
+  category       Category       @relation(fields: [categoryId], references: [id])
+  colors         ProductColor[]
+  images         ProductImage[]
+  variants       Variant[]
+  wishlistedBy   WishlistItem[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([categoryId, status])
+  @@index([status, newArrival])
+}
+
+model ProductColor {
+  id        String         @id @default(cuid())
+  productId String
+  name      String
+  hex       String
+  position  Int            @default(0)
+  product   Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  images    ProductImage[]
+  variants  Variant[]
+
+  @@unique([productId, name])
+}
+
+model ProductImage {
+  id        String        @id @default(cuid())
+  productId String
+  /// null = shared by every colour of the product
+  colorId   String?
+  url       String
+  alt       String
+  position  Int
+  product   Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  color     ProductColor? @relation(fields: [colorId], references: [id], onDelete: SetNull)
+
+  @@index([productId, position])
+}
+
+/// One SKU per colour × size.
+model Variant {
+  id           String              @id @default(cuid())
+  productId    String
+  colorId      String
+  size         String
+  sku          String              @unique
+  /// Physical units. Available = stock − active (non-expired) reservations.
+  stock        Int                 @default(0)
+  product      Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  color        ProductColor        @relation(fields: [colorId], references: [id], onDelete: Cascade)
+  orderItems   OrderItem[]
+  reservations StockReservation[]
+  movements    InventoryMovement[]
+  exchangeFor  ReturnItem[]
+
+  @@unique([productId, colorId, size])
+}
+
+/// Temporary hold while the customer pays. Converted to a SALE movement by the Stripe webhook.
+model StockReservation {
+  id              String   @id @default(cuid())
+  variantId       String
+  userId          String
+  quantity        Int
+  paymentIntentId String
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+  variant         Variant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([variantId, expiresAt])
+  @@index([paymentIntentId])
+}
+
+enum MovementReason {
+  RESTOCK
+  SALE
+  RETURN
+  ADJUSTMENT
+  CANCELLATION
+}
+
+model InventoryMovement {
+  id        String         @id @default(cuid())
+  variantId String
+  /// +5 restock, −1 sale
+  delta     Int
+  reason    MovementReason
+  note      String?
+  orderId   String?
+  actorId   String?
+  variant   Variant        @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  actor     User?          @relation("MovementActor", fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt DateTime       @default(now())
+
+  @@index([variantId, createdAt])
+}
+
+// ───────────────────────── Users (Auth.js Prisma Adapter) ─────────────────────────
+
+enum Role {
+  CUSTOMER
+  EDITOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  BLOCKED
+}
+
+model User {
+  id             String               @id @default(cuid())
+  email          String               @unique
+  emailVerified  DateTime?
+  name           String?
+  image          String?
+  /// null when the user only signs in with Google
+  passwordHash   String?
+  phone          String?
+  role           Role                 @default(CUSTOMER)
+  status         UserStatus           @default(ACTIVE)
+  marketingOptIn Boolean              @default(false)
+  lastSeenAt     DateTime?
+  accounts       Account[]
+  sessions       Session[]
+  addresses      Address[]
+  orders         Order[]
+  wishlist       WishlistItem[]
+  reservations   StockReservation[]
+  redemptions    DiscountRedemption[]
+  returns        Return[]
+  auditLogs      AuditLog[]
+  movements      InventoryMovement[]  @relation("MovementActor")
+  refundsIssued  Refund[]             @relation("RefundActor")
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([role, status])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Address {
+  id         String   @id @default(cuid())
+  userId     String
+  firstName  String
+  lastName   String
+  line1      String
+  line2      String?
+  city       String
+  postalCode String
+  /// ISO 3166-1 alpha-2
+  country    String
+  phone      String
+  isDefault  Boolean  @default(false)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model WishlistItem {
+  userId    String
+  productId String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([userId, productId])
+}
+
+// ───────────────────────── Orders ─────────────────────────
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum ShippingMethod {
+  STANDARD
+  EXPRESS
+}
+
+model Order {
+  id              String              @id @default(cuid())
+  /// Human-facing number, e.g. PH-2026-00125
+  number          String              @unique
+  /// Required: checkout needs an account (no guest orders)
+  userId          String
+  email           String
+  status          OrderStatus         @default(PENDING)
+  currency        String              @default("EUR")
+  subtotal        Decimal             @db.Decimal(10, 2)
+  discountTotal   Decimal             @default(0) @db.Decimal(10, 2)
+  shippingTotal   Decimal             @db.Decimal(10, 2)
+  total           Decimal             @db.Decimal(10, 2)
+  shippingMethod  ShippingMethod
+  /// Snapshot of the address at purchase time
+  shippingAddress Json
+  user            User                @relation(fields: [userId], references: [id])
+  items           OrderItem[]
+  payments        Payment[]
+  shipments       Shipment[]
+  returns         Return[]
+  redemption      DiscountRedemption?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+/// Snapshot of the product at purchase time, so catalogue edits never rewrite history.
+model OrderItem {
+  id          String       @id @default(cuid())
+  orderId     String
+  variantId   String?
+  name        String
+  sku         String
+  color       String
+  size        String
+  image       String
+  unitPrice   Decimal      @db.Decimal(10, 2)
+  quantity    Int
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant     Variant?     @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  returnItems ReturnItem[]
+
+  @@index([orderId])
+  @@index([variantId])
+}
+
+// ───────────────────────── Payments (Stripe) ─────────────────────────
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  orderId               String
+  stripePaymentIntentId String        @unique
+  amount                Decimal       @db.Decimal(10, 2)
+  amountRefunded        Decimal       @default(0) @db.Decimal(10, 2)
+  status                PaymentStatus
+  /// card | apple_pay | google_pay | paypal
+  method                String
+  brand                 String?
+  last4                 String?
+  failureReason         String?
+  order                 Order         @relation(fields: [orderId], references: [id])
+  refunds               Refund[]
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  @@index([orderId])
+  @@index([status, createdAt])
+}
+
+model Refund {
+  id             String   @id @default(cuid())
+  paymentId      String
+  returnId       String?
+  stripeRefundId String   @unique
+  amount         Decimal  @db.Decimal(10, 2)
+  reason         String?
+  actorId        String?
+  payment        Payment  @relation(fields: [paymentId], references: [id])
+  return         Return?  @relation(fields: [returnId], references: [id], onDelete: SetNull)
+  actor          User?    @relation("RefundActor", fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt      DateTime @default(now())
+
+  @@index([paymentId])
+}
+
+// ───────────────────────── Shipping ─────────────────────────
+
+enum ShipmentStatus {
+  LABEL_CREATED
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  EXCEPTION
+  RETURNED
+}
+
+model Shipment {
+  id             String         @id @default(cuid())
+  orderId        String
+  carrier        String
+  trackingNumber String
+  trackingUrl    String?
+  status         ShipmentStatus @default(LABEL_CREATED)
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+  order          Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([orderId])
+  @@index([carrier, trackingNumber])
+}
+
+// ───────────────────────── Returns & exchanges ─────────────────────────
+
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  RECEIVED
+  REFUNDED
+  EXCHANGED
+}
+
+enum ReturnType {
+  REFUND
+  EXCHANGE
+}
+
+model Return {
+  id        String       @id @default(cuid())
+  /// e.g. RT-2026-00012
+  number    String       @unique
+  orderId   String
+  userId    String
+  type      ReturnType
+  status    ReturnStatus @default(REQUESTED)
+  reason    String
+  labelUrl  String?
+  order     Order        @relation(fields: [orderId], references: [id])
+  user      User         @relation(fields: [userId], references: [id])
+  items     ReturnItem[]
+  refunds   Refund[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([orderId])
+  @@index([status, createdAt])
+}
+
+model ReturnItem {
+  id                String    @id @default(cuid())
+  returnId          String
+  orderItemId       String
+  quantity          Int
+  /// New size/colour when the return is an exchange
+  exchangeVariantId String?
+  /// Inspection note on receipt
+  condition         String?
+  return            Return    @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  orderItem         OrderItem @relation(fields: [orderItemId], references: [id])
+  exchangeVariant   Variant?  @relation(fields: [exchangeVariantId], references: [id], onDelete: SetNull)
+}
+
+// ───────────────────────── Discounts ─────────────────────────
+
+enum DiscountType {
+  PERCENT
+  FIXED
+}
+
+model DiscountCode {
+  id              String               @id @default(cuid())
+  /// Stored uppercase
+  code            String               @unique
+  type            DiscountType
+  /// 10 = 10 % (PERCENT) or €10 (FIXED)
+  value           Decimal              @db.Decimal(10, 2)
+  minSubtotal     Decimal?             @db.Decimal(10, 2)
+  startsAt        DateTime?
+  expiresAt       DateTime?
+  maxUses         Int?
+  usedCount       Int                  @default(0)
+  oncePerCustomer Boolean              @default(false)
+  active          Boolean              @default(true)
+  /// Empty = applies to the whole catalogue
+  categories      Category[]           @relation("DiscountCodeCategories")
+  redemptions     DiscountRedemption[]
+  createdAt       DateTime             @default(now())
+}
+
+model DiscountRedemption {
+  id        String       @id @default(cuid())
+  codeId    String
+  userId    String
+  orderId   String       @unique
+  amount    Decimal      @db.Decimal(10, 2)
+  code      DiscountCode @relation(fields: [codeId], references: [id])
+  user      User         @relation(fields: [userId], references: [id])
+  order     Order        @relation(fields: [orderId], references: [id])
+  createdAt DateTime     @default(now())
+
+  @@index([codeId, userId])
+}
+
+// ───────────────────────── Audit & marketing ─────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  /// e.g. "product.update", "payment.refund", "user.block"
+  action     String
+  entityType String
+  entityId   String
+  /// before/after diff
+  changes    Json?
+  actor      User     @relation(fields: [actorId], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+}
+
+model NewsletterSubscriber {
+  email     String   @id
+  createdAt DateTime @default(now())
+}
