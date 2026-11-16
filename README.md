@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DE LUX — E-commerce de moda
 
-## Getting Started
+Tienda online completa de moda ("Parisian Modern Wardrobe"): catálogo, carrito, checkout con pagos reales con Stripe, área de cliente y panel de administración. Proyecto full-stack con Next.js y PostgreSQL.
 
-First, run the development server:
+## Funcionalidades
+
+**Tienda**
+- Catálogo por colecciones y categorías, buscador, ficha de producto con variantes (talla y color) e imágenes
+- Carrito persistente y lista de deseos
+- Checkout con **Stripe** (Payment Element + PaymentIntents) y webhooks para confirmar pagos
+- Códigos de descuento, gastos de envío y control de stock con reservas durante el pago
+- Cuenta de cliente: pedidos, direcciones y perfil
+- Páginas de envíos, devoluciones, contacto y newsletter
+
+**Panel de administración**
+- Gestión de productos, usuarios y pagos (con reembolsos)
+- Roles **ADMIN** y **EDITOR** con permisos distintos
+- Registro de auditoría de acciones
+
+## Tecnologías
+
+| Área | Stack |
+|---|---|
+| Framework | Next.js (App Router) + React + TypeScript |
+| Base de datos | PostgreSQL + Prisma ORM (24 modelos: productos, variantes, pedidos, pagos, devoluciones, cupones…) |
+| Pagos | Stripe |
+| Formularios y validación | react-hook-form + Zod (mismos esquemas en cliente y API) |
+| Estado | Zustand |
+| UI | Tailwind CSS, Radix UI, componentes estilo shadcn, Lucide, Sonner |
+| Autenticación | Sesión con cookie httpOnly y contraseñas con hash |
+
+## Arquitectura
+
+- `src/app/(shop)` — páginas de la tienda
+- `src/app/admin` — panel de administración
+- `src/app/api` — API REST con Route Handlers (validan con Zod y delegan en `src/server`)
+- `src/server` — lógica de negocio: checkout, precios, Stripe, autenticación, subidas
+- `prisma/` — esquema, migraciones y datos de ejemplo (seed)
+- `docs/` — [documentación de la API](docs/API.md) y del [modelo de datos](docs/DATA-MODEL.md)
+
+## Puesta en marcha
+
+Requisitos: Node.js 20+ y PostgreSQL.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env      # rellena DATABASE_URL y las claves de Stripe
+npm run db:migrate        # crea las tablas
+npm run db:seed           # carga productos de ejemplo
+npm run dev               # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Sin claves de Stripe, la tienda funciona y el checkout responde 503.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Otros scripts: `npm run db:studio` (explorar la base de datos), `npm run user:password` (cambiar la contraseña de un usuario), `npm run lint`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Autora
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+**María de Lourdes Ortiz** — Desarrolladora web full-stack · [Creaciones Digitales](https://www.creaciones-digitales.com/)
